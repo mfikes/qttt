@@ -10,7 +10,7 @@
 #import "AppDelegate.h"
 
 #import "RCTRootView.h"
-
+#import "RCTEventDispatcher.h"
 #import "ABYServer.h"
 #import "ABYContextManager.h"
 #import "BTHContextExecutor.h"
@@ -19,6 +19,7 @@
 
 @property (strong, nonatomic) ABYServer* replServer;
 @property (strong, nonatomic) ABYContextManager* contextManager;
+@property (strong, nonatomic) NSURL* compilerOutputDirectory;
 
 @end
 
@@ -66,27 +67,12 @@
   //                                                 launchOptions:launchOptions];
   
   // Set up the compiler output directory
-  NSURL* compilerOutputDirectory = [[self privateDocumentsDirectory] URLByAppendingPathComponent:@"cljs-out"];
-  
-  // Ensure private documents directory exists
-  [self createDirectoriesUpTo:[self privateDocumentsDirectory]];
-  
-  // Copy resources from bundle "out" to compilerOutputDirectory
-  
-  NSFileManager* fileManager = [NSFileManager defaultManager];
-  fileManager.delegate = self;
-  
-  // First blow away old compiler output directory
-  [fileManager removeItemAtPath:compilerOutputDirectory.path error:nil];
-  
-  // Copy files from bundle to compiler output driectory
-  NSString *outPath = [[NSBundle mainBundle] pathForResource:@"out" ofType:nil];
-  [fileManager copyItemAtPath:outPath toPath:compilerOutputDirectory.path error:nil];
+  self.compilerOutputDirectory = [[self privateDocumentsDirectory] URLByAppendingPathComponent:@"cljs-out"];
   
   // Set up our context
-  self.contextManager = [[ABYContextManager alloc] initWithContext:[[JSContext alloc] init]
-                                           compilerOutputDirectory:compilerOutputDirectory];
-  [self.contextManager setUpAmblyImportScript];
+  self.contextManager = [[ABYContextManager alloc] initWithContext:JSGlobalContextCreate(NULL)
+                                           compilerOutputDirectory:self.compilerOutputDirectory];
+ 
   
   // Inject our context into the BTHContextExecutor (it sets the static variable)
   [BTHContextExecutor setContext:self.contextManager.context];
@@ -103,37 +89,66 @@
   RCTRootView *rootView = [[RCTRootView alloc] initWithBridge:bridge
                                                    moduleName:@"QTTT"];
   
-  NSString* mainJsFilePath = [[compilerOutputDirectory URLByAppendingPathComponent:@"main" isDirectory:NO] URLByAppendingPathExtension:@"js"].path;
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(contentDidAppear)
+                                               name:RCTContentDidAppearNotification
+                                             object:rootView];
   
-  NSURL* googDirectory = [compilerOutputDirectory URLByAppendingPathComponent:@"goog"];
-  
-  [self.contextManager bootstrapWithDepsFilePath:mainJsFilePath
-                                    googBasePath:[[googDirectory URLByAppendingPathComponent:@"base" isDirectory:NO] URLByAppendingPathExtension:@"js"].path];
-  
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-     [self requireAppNamespaces:self.contextManager.context];
-    
-    JSValue* initFn = [self getValue:@"main" inNamespace:@"qttt.ui.om-ios" fromContext:self.contextManager.context];
-    NSAssert(!initFn.isUndefined, @"Could not find the app init function");
-    [initFn callWithArguments:@[]];
-    
-  });
- 
   self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
   UIViewController *rootViewController = [[UIViewController alloc] init];
   rootViewController.view = rootView;
   self.window.rootViewController = rootViewController;
   [self.window makeKeyAndVisible];
   
+  return YES;
+}
+
+- (void)contentDidAppear
+{
+  // Ensure private documents directory exists
+  [self createDirectoriesUpTo:[self privateDocumentsDirectory]];
+  
+  // Copy resources from bundle "out" to compilerOutputDirectory
+  
+  NSFileManager* fileManager = [NSFileManager defaultManager];
+  fileManager.delegate = self;
+  
+  // First blow away old compiler output directory
+  [fileManager removeItemAtPath:self.compilerOutputDirectory.path error:nil];
+  
+  // Copy files from bundle to compiler output driectory
+  NSString *outPath = [[NSBundle mainBundle] pathForResource:@"out" ofType:nil];
+  [fileManager copyItemAtPath:outPath toPath:self.compilerOutputDirectory.path error:nil];
+  
+   [self.contextManager setUpAmblyImportScript];
+  
+  NSString* mainJsFilePath = [[self.compilerOutputDirectory URLByAppendingPathComponent:@"main" isDirectory:NO] URLByAppendingPathExtension:@"js"].path;
+  
+  NSURL* googDirectory = [self.compilerOutputDirectory URLByAppendingPathComponent:@"goog"];
+  
+  [self.contextManager bootstrapWithDepsFilePath:mainJsFilePath
+                                    googBasePath:[[googDirectory URLByAppendingPathComponent:@"base" isDirectory:NO] URLByAppendingPathExtension:@"js"].path];
+  
+  JSContext* context = [JSContext contextWithJSGlobalContextRef:self.contextManager.context];
+  [self requireAppNamespaces:context];
+  
+  JSValue* initFn = [self getValue:@"main" inNamespace:@"qttt.ui.om-ios" fromContext:context];
+  NSAssert(!initFn.isUndefined, @"Could not find the app init function");
+  [initFn callWithArguments:@[]];
+  
+  // Send a nonsense UI event to get the UI going
+  RCTRootView* rootView = (RCTRootView*)self.window.rootViewController.view;
+  [rootView.bridge.modules[@"RCTEventDispatcher"] sendInputEventWithName:@"" body:@{@"target": @1}];
+  
   // Now that React Native has been initialized, fire up our REPL server
   self.replServer = [[ABYServer alloc] initWithContext:self.contextManager.context
-                               compilerOutputDirectory:compilerOutputDirectory];
+                               compilerOutputDirectory:self.compilerOutputDirectory];
   BOOL successful = [self.replServer startListening];
   if (!successful) {
     NSLog(@"Failed to start REPL server.");
   }
 
-  return YES;
+
 }
 
 - (NSURL *)privateDocumentsDirectory

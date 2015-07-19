@@ -16,12 +16,6 @@ var QTTT = React.createClass({
   render: function() {
     return (
       <View style={styles.container}>
-        <Text style={styles.welcome}>
-          Welcome to Quantum Tic Tac Toe
-        </Text>
-        <Text style={styles.instructions}>
-          Tap to start!
-        </Text>
       </View>
     );
   }
